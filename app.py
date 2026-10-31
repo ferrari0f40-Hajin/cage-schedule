@@ -58,7 +58,7 @@ def load_data():
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 return (
-                    data.get("members", ["고지우", "정하진", "이윤원", "황선미"]),
+                    data.get("members", ["문석환과장", "정하진주임", "이윤원사원", "황선미사원"]),
                     data.get("schedule", {}),
                     data.get("shifts", DEFAULT_SHIFTS),
                     data.get("summary", {}),
@@ -67,7 +67,7 @@ def load_data():
                 )
         except Exception:
             pass
-    return ["고지우", "정하진", "이윤원", "황선미"], {}, DEFAULT_SHIFTS, {}, {}, []
+    return ["문석환과장", "정하진주임", "이윤원사원", "황선미사원"], {}, DEFAULT_SHIFTS, {}, {}, []
 
 def save_data(members, schedule, shifts, summary, fixed_holidays, custom_holidays):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
@@ -105,7 +105,7 @@ def get_image_base64(path):
 
 logo_base64 = get_image_base64(LOGO_FILE)
 
-# --- 상단 로고 및 타이틀 ---
+# --- 상단 로고 및 타이틀 (제작자 정하진 포인트 적용) ---
 col_logo, col_title = st.columns([1, 4])
 with col_logo:
     if os.path.exists(LOGO_FILE):
@@ -113,7 +113,12 @@ with col_logo:
     else:
         st.markdown("🎰 **CAGE LOGO**")
 with col_title:
-    st.title("CAGE 팀 근무스케줄 관리 시스템")
+    st.markdown("""
+        <div style="display: flex; align-items: center; justify-content: space-between;">
+            <h1 style="margin: 0; font-size: 1.8rem;">CAGE 팀 근무스케줄 관리 시스템</h1>
+            <span style="background: linear-gradient(135deg, #6366f1, #a855f7); color: white; padding: 4px 12px; border-radius: 20px; font-size: 0.85rem; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">✨ Designer. 정하진</span>
+        </div>
+    """, unsafe_allow_html=True)
 
 st.sidebar.header("🔐 접속 및 권한 설정")
 mode = st.sidebar.radio("모드 선택", ["일반 팀원 (조회 전용)", "관리자 (로그인 필요)"])
@@ -121,7 +126,7 @@ mode = st.sidebar.radio("모드 선택", ["일반 팀원 (조회 전용)", "관�
 is_admin = False
 if mode == "관리자 (로그인 필요)":
     admin_pw = st.sidebar.text_input("관리자 비밀번호 입력", type="password")
-    if admin_pw == "admin1234":
+    if admin_pw == "msh1014":
         is_admin = True
         st.sidebar.success("✅ 관리자 권한 활성화됨")
     elif admin_pw:
@@ -130,7 +135,7 @@ if mode == "관리자 (로그인 필요)":
 now_dt = datetime.datetime.now()
 col_y, col_m = st.sidebar.columns(2)
 with col_y:
-    year = st.selectbox("연도 선택", [now_dt.year - 1, now_dt.year, now_dt.year + 1], index=1)
+    year = st.selectbox("연도 선택", [now_dt.year - 1, now_dt.year, now_dt.year+1], index=1)
 with col_m:
     default_month_idx = now_dt.month - 1 if year == now_dt.year else 0
     month = st.selectbox("월 선택", list(range(1, 13)), index=default_month_idx)
@@ -236,7 +241,7 @@ if is_admin:
         except Exception as e:
             st.sidebar.error(f"❌ 엑셀 불러오기 오류: {e}")
 
-# PDF 인쇄 HTML 생성 함수 (행 높이 및 열 너비 고정, 밸런스 조정된 폰트 크기)
+# PDF 인쇄 HTML 생성 함수
 def generate_pdf_html(year, month, members, schedule_data, summary_data, fixed_holidays_data, logo_b64):
     _, dim = calendar.monthrange(year, month)
     days_korean_abbr = ["월", "화", "수", "목", "금", "토", "일"]
@@ -352,8 +357,16 @@ for m_idx, member in enumerate(members):
 edit_df = pd.DataFrame(edit_rows, columns=edit_columns)
 
 if is_admin:
-    st.info("💡 **관리자 모드**: 성명 칸에 `고지우 (사원)` 처럼 적으시면 직급이 작은 글씨로 분리됩니다. 수정 후 하단의 **[💾 전체 변경사항 저장]**을 누르세요.")
-    edited_df = st.data_editor(edit_df, use_container_width=True, hide_index=True, num_rows="dynamic", disabled=["NO"])
+    st.info("💡 **관리자 모드 (다중 셀 편집 지원)**: 스마트폰이나 PC에서 여러 셀을 드래그하여 선택하거나 엑셀 내용을 복사해서 붙여넣을 수 있습니다. 수정 후 **[💾 전체 변경사항 저장]**을 누르세요.")
+    
+    # 모바일 다중 선택 및 편집 최적화 데이터 에디터
+    edited_df = st.data_editor(
+        edit_df,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="dynamic",
+        disabled=["NO"]
+    )
 
     if st.button("💾 전체 변경사항 저장", type="primary"):
         updated_members = []
@@ -376,7 +389,7 @@ if is_admin:
         st.success("✅ 스케줄이 저장되었습니다!")
         st.rerun()
 
-# --- 조회용 스케줄표 (틀 규격 및 행 높이 고정 최적화) ---
+# --- 조회용 스케줄표 (가로 스크롤 및 달 이동 최적화) ---
 view_rows = []
 for m_idx, member in enumerate(members):
     off_cnt, ot_sum = 0, 0
@@ -406,15 +419,23 @@ def style_dataframe_cells(val):
 styled_view_df = view_df.style.map(style_dataframe_cells, subset=day_cols)
 st.dataframe(styled_view_df, use_container_width=True, hide_index=True)
 
-# 하단 잔여 현황 및 동적 결재란
+# --- 하단 잔여 현황 및 동적 결재란 (휴대폰 가독성 개선 스타일 적용) ---
 st.markdown("---")
 col_sum_title, col_approval = st.columns([1, 2])
 with col_sum_title:
     st.subheader("📌 [휴일 및 연차(잔여) 현황]")
 with col_approval:
-    app_h = "".join([f"<th style='border: 1px solid #ccc; padding: 4px; min-width: 60px;'>{m.split('(')[0].split()[0]}</th>" for m in members])
-    app_td = "".join(["<td style='border: 1px solid #ccc; height: 35px;'></td>" for _ in members])
-    st.markdown(f'<div style="text-align: right;"><table style="display: inline-table; border-collapse: collapse; text-align: center; font-size: 11px;"><tr style="background-color: #f0f2f6;">{app_h}</tr><tr>{app_td}</tr></table></div>', unsafe_allow_html=True)
+    # 휴대폰 다크모드/라이트모드에서도 선명하게 보이도록 배경과 글자색 지정
+    app_h = "".join([f"<th style='border: 1px solid #94a3b8; background-color: #f8fafc; color: #0f172a; padding: 6px; min-width: 65px; font-weight: bold;'>{m.split('(')[0].split()[0]}</th>" for m in members])
+    app_td = "".join(["<td style='border: 1px solid #cbd5e1; background-color: #ffffff; color: #1e293b; height: 40px;'></td>" for _ in members])
+    st.markdown(f'''
+        <div style="text-align: right; overflow-x: auto;">
+            <table style="display: inline-table; border-collapse: collapse; text-align: center; font-size: 11px; width: 100%;">
+                <tr>{app_h}</tr>
+                <tr>{app_td}</tr>
+            </table>
+        </div>
+    ''', unsafe_allow_html=True)
 
 sum_rows = [[i + 1, m, sum(get_ot_for_code(schedule_data.get(f"{year}-{month}-{i}-{d}", "OFF"), shift_types) for d in range(1, days_in_month + 1)), summary_data.get(f"{year}-{month}-{i}", {}).get("val", "연차"), summary_data.get(f"{year}-{month}-{i}", {}).get("memo", "")] for i, m in enumerate(members)]
 sum_df = pd.DataFrame(sum_rows, columns=["NO", "성명", "O.T 합계", "휴일 및 연차(잔여)", "비고"])
