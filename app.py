@@ -7,9 +7,24 @@ import datetime
 import re
 import streamlit.components.v1 as components
 import base64
+from supabase import create_client, Client
 
-DATA_FILE = "cage_schedule_data.json"
 LOGO_FILE = "logo.png"
+DATA_FILE = "cage_schedule_data.json"
+
+# --- Supabase 클라우드 DB 연결 설정 ---
+@st.cache_resource
+def init_supabase():
+    try:
+        if "supabase" in st.secrets:
+            url = st.secrets["supabase"]["url"]
+            key = st.secrets["supabase"]["key"]
+            return create_client(url, key)
+    except Exception as e:
+        st.session_state["supabase_init_error"] = str(e)
+    return None
+
+supabase: Client = init_supabase()
 
 DEFAULT_SHIFTS = [
     {"code": "10", "ot": 0, "off": 0}, {"code": "10+1", "ot": 1, "off": 0}, {"code": "10+2", "ot": 2, "off": 0}, {"code": "10+3", "ot": 3, "off": 0},
@@ -53,12 +68,28 @@ def get_public_holidays(year, custom_holidays_list):
     return holidays
 
 def load_data():
+    # 1. Supabase 클라우드 DB에서 불러오기 시도
+    if supabase:
+        try:
+            response = supabase.table("cage_data").select("data").eq("id", "main_db").execute()
+            if response.data and len(response.data) > 0 and response.data[0].get("data"):
+                st.session_state["db_status"] = "connected"
+                return response.data[0]["data"]
+            else:
+                st.session_state["db_status"] = "empty"
+        except Exception as e:
+            st.session_state["db_status"] = f"error: {e}"
+    else:
+        st.session_state["db_status"] = "not_configured"
+            
+    # 2. 로컬 파일에서 불러오기 (백업용)
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             pass
+            
     return {
         "monthly_data": {},
         "shifts": DEFAULT_SHIFTS,
@@ -66,8 +97,25 @@ def load_data():
     }
 
 def save_data(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    # 1. 로컬 파일에 먼저 백업 저장
+    try:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        st.error(f"❌ 로컬 백업 파일 저장 오류: {e}")
+
+    # 2. Supabase 클라우드 DB에 영구 저장
+    if supabase:
+        try:
+            supabase.table("cage_data").upsert({"id": "main_db", "data": data}).execute()
+            st.session_state["db_status"] = "connected"
+            return True
+        except Exception as e:
+            st.error(f"❌ 클라우드 DB(Supabase) 저장 실패! 앱 재시작 시 데이터가 초기화될 수 있습니다.\n원인: {e}")
+            return False
+    else:
+        st.warning("⚠️ 클라우드 DB(Supabase)가 연결되지 않았습니다. Streamlit Secrets 설정을 확인해 주세요.")
+        return False
 
 def get_ot_for_code(code, shift_types):
     code = str(code).strip()
@@ -86,12 +134,12 @@ def get_ot_for_code(code, shift_types):
     for m in match_minus: base_ot -= int(m)
     return base_ot
 
+st.set_page_config(page_title="CAGE 팀 근무스케줄", layout="wide")
+
 db_data = load_data()
 monthly_data = db_data.get("monthly_data", {})
 shift_types = db_data.get("shifts", DEFAULT_SHIFTS)
 custom_holidays_list = db_data.get("custom_holidays", [])
-
-st.set_page_config(page_title="CAGE 팀 근무스케줄", layout="wide")
 
 def get_image_base64(path):
     if os.path.exists(path):
@@ -117,6 +165,18 @@ with col_title:
     """, unsafe_allow_html=True)
 
 st.sidebar.header("🔐 접속 및 권한 설정")
+
+# DB 연결 상태 표시 (데이터 초기화 방지 진단용)
+db_stat = st.session_state.get("db_status", "")
+if db_stat == "connected":
+    st.sidebar.success("☁️ 클라우드 DB 영구저장 연결됨")
+elif db_stat == "empty":
+    st.sidebar.info("☁️ 클라우드 DB 연결됨 (저장된 데이터 없음)")
+elif db_stat == "not_configured":
+    st.sidebar.error("⚠️ 클라우드 DB 미연결 (Secrets 미설정 - 절전 시 데이터 사라짐)")
+elif db_stat.startswith("error:"):
+    st.sidebar.error(f"⚠️ 클라우드 DB 오류: {db_stat}")
+
 mode = st.sidebar.radio("모드 선택", ["일반 팀원 (조회 전용)", "관리자 (로그인 필요)"])
 
 is_admin = False
@@ -164,7 +224,8 @@ if is_admin:
     if new_custom_list != custom_holidays_list:
         custom_holidays_list = new_custom_list
         db_data["custom_holidays"] = custom_holidays_list
-        save_data(db_data)
+        if save_data(db_data):
+            st.rerun()
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("📂 기존 엑셀 불러오기 (즉시 적용)")
@@ -254,9 +315,9 @@ if is_admin:
                 t_data["fixed_holidays"] = new_fh
                 t_data["summary"] = new_sum
                 db_data["monthly_data"] = monthly_data
-                save_data(db_data)
-                st.sidebar.success(f"✅ [{p_y}년 {p_m}월] 엑셀 스케줄이 완벽 적용되었습니다!")
-                st.rerun()
+                if save_data(db_data):
+                    st.sidebar.success(f"✅ [{p_y}년 {p_m}월] 엑셀 스케줄이 클라우드 DB에 영구 저장되었습니다!")
+                    st.rerun()
         except Exception as e:
             st.sidebar.error(f"❌ 엑셀 불러오기 오류: {e}")
 
@@ -285,8 +346,6 @@ def generate_pdf_html(year, month, members, schedule_data, summary_data, fixed_h
         name_display = f"{m_name}<br><span class='rank-text'>{m_rank}</span>" if m_rank else m_name
         
         for d in range(1, dim + 1):
-            dt = datetime.date(year, month, d)
-            wd = dt.weekday()
             c = str(schedule_data.get(f"{i}-{d}", "")).strip()
             
             if not c:
@@ -371,7 +430,7 @@ if st.sidebar.button("🖨️ 인쇄 및 PDF 저장 창 열기"):
     pdf_html = generate_pdf_html(year, month, members, schedule_data, summary_data, fixed_holidays_data, logo_base64)
     components.html(pdf_html, height=780, scrolling=True)
 
-day_cols = [f"{d}({days_korean[datetime.date(year, month, d).weekday()]})" for d in range(1, days_in_month + 1)]
+day_cols = [f"{d}({days_korean[datetime.date(year, month, d).weekday()][0]})" for d in range(1, days_in_month + 1)]
 edit_columns = ["NO", "성명", "고정휴일"] + day_cols
 
 st.divider()
@@ -422,10 +481,9 @@ if is_admin:
         current_month_data["fixed_holidays"] = new_fixed_holidays
         monthly_data[month_key] = current_month_data
         db_data["monthly_data"] = monthly_data
-        save_data(db_data)
-        
-        st.success(f"✅ [{year}년 {month}월] 스케줄이 성공적으로 저장되었습니다!")
-        st.rerun()
+        if save_data(db_data):
+            st.success(f"✅ [{year}년 {month}월] 스케줄이 클라우드 DB에 영구 저장되었습니다!")
+            st.rerun()
 
 # --- 조회용 스케줄표 ---
 view_rows = []
@@ -462,14 +520,14 @@ with col_sum_title:
 with col_approval:
     app_h = "".join([f"<th style='border: 1px solid #94a3b8; background-color: #f8fafc; color: #0f172a; padding: 6px; min-width: 65px; font-weight: bold;'>{m.split('(')[0].split()[0]}</th>" for m in members])
     app_td = "".join(["<td style='border: 1px solid #cbd5e1; background-color: #ffffff; color: #1e293b; height: 40px;'></td>" for _ in members])
-    st.markdown(f'''
+    st.markdown(f"""
         <div style="text-align: right; overflow-x: auto;">
             <table style="display: inline-table; border-collapse: collapse; text-align: center; font-size: 11px; width: 100%;">
                 <tr>{app_h}</tr>
                 <tr>{app_td}</tr>
             </table>
         </div>
-    ''', unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
 
 sum_rows = []
 for i, m in enumerate(members):
@@ -493,8 +551,8 @@ if is_admin:
         current_month_data["summary"] = summary_data
         monthly_data[month_key] = current_month_data
         db_data["monthly_data"] = monthly_data
-        save_data(db_data)
-        st.success("✅ 잔여 현황 및 비고 내용이 저장되었습니다!")
-        st.rerun()
+        if save_data(db_data):
+            st.success("✅ 잔여 현황 및 비고 내용이 클라우드 DB에 영구 저장되었습니다!")
+            st.rerun()
 else:
     st.dataframe(sum_df, use_container_width=True, hide_index=True)
